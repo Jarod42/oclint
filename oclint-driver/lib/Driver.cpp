@@ -90,10 +90,35 @@ static clang::driver::Driver *newDriver(clang::DiagnosticsEngine *diagnostics,
 
 static std::string compilationJobsToString(const clang::driver::Job &job)
 {
-    clang::SmallString<256> errorMsg;
-    llvm::raw_svector_ostream errorStream(errorMsg);
-    job.Print(errorStream, "; ", true);
-    return errorStream.str();
+    std::stringstream buffer;
+    if (const clang::driver::Command *cmd = clang::dyn_cast<clang::driver::Command>(&job))
+    {
+        buffer << cmd->getExecutable();
+        for (llvm::opt::ArgStringList::const_iterator argIdx = cmd->getArguments().begin(),
+            argEnd = cmd->getArguments().end(); argIdx != argEnd; ++argIdx)
+        {
+            buffer << " ";
+            for (const char *s = *argIdx; *s; ++s)
+            {
+                if (*s == '"' || *s == '\\' || *s == '$')
+                {
+                    buffer << '\\';
+                }
+                buffer << *s;
+            }
+        }
+        buffer << "\n";
+    }
+    else
+    {
+        const clang::driver::JobList *jobs = clang::cast<clang::driver::JobList>(&job);
+        for (clang::driver::JobList::const_iterator jobIdx = jobs->begin(), jobEnd = jobs->end();
+            jobIdx != jobEnd; ++jobIdx)
+        {
+            buffer << compilationJobsToString(**jobIdx);
+        }
+    }
+    return buffer.str();
 }
 
 static const llvm::opt::ArgStringList *getCC1Arguments(clang::driver::Compilation *compilation)
@@ -102,7 +127,7 @@ static const llvm::opt::ArgStringList *getCC1Arguments(clang::driver::Compilatio
     if (jobList.size() != 1 || !clang::isa<clang::driver::Command>(*jobList.begin()))
     {
         throw oclint::GenericException("one compiler command contains multiple jobs:\n" +
-            compilationJobsToString(jobList) + "\n");
+            compilationJobsToString(compilation->getJobs()) + "\n");
     }
 
     const clang::driver::Command *cmd = clang::cast<clang::driver::Command>(*jobList.begin());
@@ -308,9 +333,9 @@ static void invoke(CompileCommandPairs &compileCommands,
 
     // collect a collection of AST contexts
     std::vector<clang::ASTContext *> localContexts;
-    for (auto compiler : compilers)
+    for (int compilerIndex = 0; compilerIndex < compilers.size(); compilerIndex++)
     {
-        localContexts.push_back(&compiler->getASTContext());
+        localContexts.push_back(&compilers.at(compilerIndex)->getASTContext());
     }
 
     // use the analyzer to do the actual analysis
@@ -319,7 +344,7 @@ static void invoke(CompileCommandPairs &compileCommands,
     analyzer.postprocess(localContexts);
 
     // send out the signals to release or simply leak resources
-    for (size_t compilerIndex = 0; compilerIndex != compilers.size(); ++compilerIndex)
+    for (int compilerIndex = 0; compilerIndex < compilers.size(); compilerIndex++)
     {
         compilers.at(compilerIndex)->end();
         compilers.at(compilerIndex)->resetAndLeakFileManager();
